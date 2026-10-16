@@ -1,0 +1,8 @@
+{
+  "name": "KOL Tone Engine",
+  "description": "Production-ready engine that analyzes Key Opinion Leader communication styles and generates tone-matched content.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
