@@ -60,17 +60,6 @@ const FEATURE_CONFIG: Record<FeatureKey, { name: string; minTier: PlanTier; reas
   emet_master: { name: "EMET Master Sovereign Control & 1-Click Unification", minTier: "enterprise", reason: "Root-level sovereign override, node synchronization, and full platform diagnostic" },
 };
 
-const SOVEREIGN_ADMIN_USER: AuthUser = {
-  id: "usr_damone_ward",
-  name: "Damone Ward",
-  email: "damone.ward@ghostcore.io",
-  role: "ADMINISTRATOR",
-  tier: "enterprise",
-  clearance: "SOVEREIGN",
-  licenseKey: "GHOST-SOV-EMET-9999",
-  avatar: "DW",
-  joinedDate: "October 2024",
-};
 
 const EXPLORER_SAMPLE_USER: AuthUser = {
   id: "usr_explorer_demo",
@@ -100,8 +89,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (e) {
       console.warn("Could not read auth user from localStorage", e);
     }
-    // Default to Sovereign Admin so user has immediate access, but they can easily switch to Free to test paywalls!
-    return SOVEREIGN_ADMIN_USER;
+    return null;
   });
 
   const [paywallModal, setPaywallModal] = useState<{
@@ -130,63 +118,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [user]);
 
-  const login = async (email: string, _password?: string) => {
-    if (email.toLowerCase().includes("damone") || email.toLowerCase().includes("admin")) {
-      setUser(SOVEREIGN_ADMIN_USER);
+  const login = async (email: string, password?: string) => {
+    try {
+      const response = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+      const data = await response.json();
+      if (!response.ok || !data.success || !data.user || !data.sessionToken) return { success: false, error: data.error || 'Authentication failed.' };
+      const authenticatedUser = { ...data.user, sessionToken: data.sessionToken, joinedDate: new Date().toLocaleDateString() } as AuthUser;
+      setUser(authenticatedUser);
       return { success: true };
-    }
-    
-    // Standard authenticated user
-    const loggedUser: AuthUser = {
-      id: `usr_${Date.now().toString(36)}`,
-      name: email.split("@")[0].toUpperCase(),
-      email,
-      role: "RESEARCHER",
-      tier: "pro",
-      clearance: "RESEARCHER",
-      licenseKey: `GHOST-PRO-${Math.random().toString(36).substring(2, 7).toUpperCase()}`,
-      avatar: email.substring(0, 2).toUpperCase(),
-      joinedDate: new Date().toLocaleDateString("en-US", { month: "short", year: "numeric" }),
-    };
-    setUser(loggedUser);
-    return { success: true };
+    } catch { return { success: false, error: 'Authentication service unavailable.' }; }
   };
+
+  /* Legacy local-only account creation is intentionally disabled until server-side registration is configured. */
+  const register = async (_name: string, _email: string, _password?: string, _plan: PlanTier = 'free') => ({ success: false, error: 'Registration is unavailable until server-side account storage is configured.' });
 
   const loginAsSovereign = () => {
-    setUser(SOVEREIGN_ADMIN_USER);
-  };
-
-  const register = async (name: string, email: string, _password?: string, plan: PlanTier = "free") => {
-    const newUser: AuthUser = {
-      id: `usr_${Date.now().toString(36)}`,
-      name: name || email.split("@")[0],
-      email,
-      role: plan === "enterprise" ? "ADMINISTRATOR" : plan === "pro" ? "PRACTITIONER" : "EXPLORER",
-      tier: plan,
-      clearance: plan === "enterprise" ? "SOVEREIGN" : plan === "pro" ? "RESEARCHER" : "EXPLORER",
-      licenseKey: `GHOST-${plan.toUpperCase()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`,
-      avatar: (name || email).substring(0, 2).toUpperCase(),
-      joinedDate: new Date().toLocaleDateString("en-US", { month: "short", year: "numeric" }),
-    };
-    setUser(newUser);
-    return { success: true };
+    console.warn('Sovereign quick-login is disabled; use server-verified credentials.');
   };
 
   const logout = () => {
-    setUser(EXPLORER_SAMPLE_USER);
+    setUser(null);
   };
 
-  const upgradeTier = (tier: PlanTier, licenseKey?: string) => {
-    setUser((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        tier,
-        clearance: tier === "enterprise" ? "SOVEREIGN" : "RESEARCHER",
-        role: tier === "enterprise" ? "ADMINISTRATOR" : tier === "pro" ? "PRACTITIONER" : "EXPLORER",
-        licenseKey: licenseKey || `GHOST-${tier.toUpperCase()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`,
-      };
-    });
+  const upgradeTier = (_tier: PlanTier, _licenseKey?: string) => {
+    console.warn('Tier changes require verified billing and server-side entitlement checks.');
   };
 
   const canAccess = (feature: FeatureKey): boolean => {

@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import { createHmac, timingSafeEqual } from 'crypto';
 
 dotenv.config();
 
@@ -298,6 +299,36 @@ Here is the unvarnished breakdown that nobody in ${profile.niche} wants to admit
 }
 
 async function startServer() {
+  const authSecret = () => process.env.AUTH_TOKEN_SECRET || '';
+  const issueSessionToken = (email: string) => {
+    const secret = authSecret();
+    if (secret.length < 32) throw new Error('AUTH_TOKEN_SECRET must be at least 32 characters');
+    const payload = Buffer.from(JSON.stringify({ email, role: 'ADMINISTRATOR', exp: Math.floor(Date.now() / 1000) + 28800 })).toString('base64url');
+    return payload + '.' + createHmac('sha256', secret).update(payload).digest('base64url');
+  };
+  const readSessionToken = (token: string) => {
+    const secret = authSecret();
+    if (secret.length < 32 || !token || token.length > 4096) return null;
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const expected = createHmac('sha256', secret).update(parts[0]).digest();
+    let actual: Buffer;
+    try { actual = Buffer.from(parts[1], 'base64url'); } catch { return null; }
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null;
+    try {
+      const data = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+      if (data.role !== 'ADMINISTRATOR' || data.email !== (process.env.ADMIN_EMAIL || '').trim().toLowerCase() || !Number.isFinite(data.exp) || data.exp <= Math.floor(Date.now() / 1000)) return null;
+      return data;
+    } catch { return null; }
+  };
+  const requireAdmin = (req: Request, res: Response, next: import('express').NextFunction) => {
+    const header = req.headers.authorization || '';
+    const user = header.startsWith('Bearer ') ? readSessionToken(header.slice(7)) : null;
+    if (!user) return res.status(401).json({ success: false, error: 'Verified administrator session required.' });
+    (req as any).adminUser = user;
+    return next();
+  };
+
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
@@ -566,7 +597,7 @@ Synthesize the piece now adhering rigorously to the tone fingerprint.`;
   });
 
   // ── API: DAAT 9-Stage Pipeline Runner ──────────────────
-  app.post('/api/daat/run', (req: Request, res: Response) => {
+  app.post('/api/daat/run', requireAdmin, (req: Request, res: Response) => {
     const t0 = performance.now();
     const stages = [
       { id: 1, name: 'SIGNAL_CAPTURE', latencyMs: 0.2, status: 'PASSED' },
@@ -614,7 +645,7 @@ Synthesize the piece now adhering rigorously to the tone fingerprint.`;
     });
   });
 
-  app.post('/api/emet/connect', (req: Request, res: Response) => {
+  app.post('/api/emet/connect', requireAdmin, (req: Request, res: Response) => {
     res.json({
       success: true,
       message: 'ALL 8 EMET SYSTEMS UNIFIED. DAAT PIPELINE AUTHORIZED. TRUTH IS ONLINE.',
@@ -651,7 +682,7 @@ Synthesize the piece now adhering rigorously to the tone fingerprint.`;
     });
   });
 
-  app.post('/api/ayin/scan', (req: Request, res: Response) => {
+  app.post('/api/ayin/scan', requireAdmin, (req: Request, res: Response) => {
     const { mode = 'all' } = req.body;
     ayinState.activeMode = mode;
     ayinState.lastScanAt = Date.now();
@@ -664,7 +695,7 @@ Synthesize the piece now adhering rigorously to the tone fingerprint.`;
     });
   });
 
-  app.post('/api/ayin/combine', (req: Request, res: Response) => {
+  app.post('/api/ayin/combine', requireAdmin, (req: Request, res: Response) => {
     const { mode1 = 'thermal', mode2 = 'infrared', blendRatio = 0.5 } = req.body;
     res.json({
       success: true,
@@ -773,7 +804,7 @@ Synthesize the piece now adhering rigorously to the tone fingerprint.`;
     });
   });
 
-  app.post('/api/neshima/pressure', (req: Request, res: Response) => {
+  app.post('/api/neshima/pressure', requireAdmin, (req: Request, res: Response) => {
     const { pressure = 1.0 } = req.body;
     const clamped = Math.max(1.0, Math.min(3.0, +pressure));
     neshimaState.pressureAtm = clamped;
@@ -787,7 +818,7 @@ Synthesize the piece now adhering rigorously to the tone fingerprint.`;
     });
   });
 
-  app.post('/api/neshima/protocol', (req: Request, res: Response) => {
+  app.post('/api/neshima/protocol', requireAdmin, (req: Request, res: Response) => {
     const { protocolName = 'tissue' } = req.body;
     let targetAtm = 2.0;
     let o2Pct = 100;
@@ -888,7 +919,7 @@ Synthesize the piece now adhering rigorously to the tone fingerprint.`;
   });
 
   // ── API: Platform Sync (Twitter / LinkedIn / RSS Ingestion)
-  app.post('/api/platform/sync', (req: Request, res: Response) => {
+  app.post('/api/platform/sync', requireAdmin, (req: Request, res: Response) => {
     const { platform = 'twitter', handle = '', rawText = '' } = req.body;
     
     // Ingest raw text or generate sample simulation
@@ -961,84 +992,21 @@ Synthesize the piece now adhering rigorously to the tone fingerprint.`;
     });
   });
 
-  app.post('/api/billing/checkout', (req: Request, res: Response) => {
-    const { plan = 'pro', cycle = 'monthly', promoCode = '', paymentMethod = 'card', email = 'damone.ward@ghostcore.io', name = 'Damone Ward' } = req.body;
-    
-    const prices: Record<string, { monthly: number; annual: number }> = {
-      free: { monthly: 29, annual: 24 },
-      pro: { monthly: 99, annual: 79 },
-      enterprise: { monthly: 299, annual: 239 },
-    };
-
-    const targetPrice = prices[plan] || prices.pro;
-    const basePrice = cycle === 'annual' ? targetPrice.annual * 12 : targetPrice.monthly;
-
-    let discountPct = 0;
-    const cleanedPromo = String(promoCode).trim().toUpperCase();
-    if (cleanedPromo === 'SOVEREIGN' || cleanedPromo === 'EMET100') {
-      discountPct = 100;
-    } else if (cleanedPromo === 'GHOSTCORE' || cleanedPromo === 'HALFOFF') {
-      discountPct = 50;
-    }
-
-    const finalAmount = Math.max(0, basePrice - (basePrice * discountPct) / 100);
-    const orderId = `ORD-${Date.now().toString(36).toUpperCase()}`;
-    const licenseKey = `GHOST-${String(plan).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-
-    res.json({
-      success: true,
-      orderId,
-      licenseKey,
-      plan,
-      cycle,
-      amountCharged: finalAmount,
-      currency: 'USD',
-      discountPct,
-      paymentMethod,
-      customer: { name, email },
-      status: 'AUTHORIZED_AND_MINTED',
-      timestamp: Date.now(),
-    });
-  });
+  app.post('/api/billing/checkout', (_req: Request, res: Response) => res.status(503).json({ success: false, error: 'Checkout is unavailable until a verified payment provider is configured. No license was minted.' }));
 
   // ── API: Sovereign Authentication ────────────────────────
   app.post('/api/auth/login', (req: Request, res: Response) => {
-    const { email = '', password = '' } = req.body;
-    const isSovereign = email.toLowerCase().includes('damone') || email.toLowerCase().includes('admin');
-
-    res.json({
-      success: true,
-      user: {
-        id: isSovereign ? 'usr_damone_ward' : `usr_${Date.now().toString(36)}`,
-        name: isSovereign ? 'Damone Ward' : email.split('@')[0].toUpperCase(),
-        email,
-        role: isSovereign ? 'ADMINISTRATOR' : 'RESEARCHER',
-        tier: isSovereign ? 'enterprise' : 'pro',
-        clearance: isSovereign ? 'SOVEREIGN' : 'RESEARCHER',
-        licenseKey: isSovereign ? 'GHOST-SOV-EMET-9999' : `GHOST-PRO-${Math.random().toString(36).substring(2, 7).toUpperCase()}`,
-        avatar: isSovereign ? 'DW' : email.substring(0, 2).toUpperCase(),
-      },
-      sessionToken: `tok_${Math.random().toString(36).substring(2)}_${Date.now()}`,
-    });
+    const { email, password } = req.body || {};
+    const adminEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+    const adminPassword = process.env.ADMIN_PASSWORD || '';
+    if (!adminEmail || !adminPassword || authSecret().length < 32) return res.status(503).json({ success: false, error: 'Administrator authentication is not configured.' });
+    if (typeof email !== 'string' || typeof password !== 'string' || password.length > 1024) return res.status(400).json({ success: false, error: 'Email and password are required.' });
+    if (email.trim().toLowerCase() !== adminEmail || password !== adminPassword) return res.status(401).json({ success: false, error: 'Invalid credentials.' });
+    const sessionToken = issueSessionToken(adminEmail);
+    return res.json({ success: true, user: { id: 'usr-admin', name: 'Administrator', email: adminEmail, role: 'ADMINISTRATOR', tier: 'enterprise', clearance: 'SOVEREIGN', licenseKey: '', avatar: 'AD' }, sessionToken });
   });
 
-  app.post('/api/auth/register', (req: Request, res: Response) => {
-    const { name = 'Operator', email = '', plan = 'free' } = req.body;
-    res.json({
-      success: true,
-      user: {
-        id: `usr_${Date.now().toString(36)}`,
-        name,
-        email,
-        role: plan === 'enterprise' ? 'ADMINISTRATOR' : plan === 'pro' ? 'PRACTITIONER' : 'EXPLORER',
-        tier: plan,
-        clearance: plan === 'enterprise' ? 'SOVEREIGN' : plan === 'pro' ? 'RESEARCHER' : 'EXPLORER',
-        licenseKey: `GHOST-${String(plan).toUpperCase()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`,
-        avatar: name.substring(0, 2).toUpperCase(),
-      },
-      sessionToken: `tok_${Math.random().toString(36).substring(2)}_${Date.now()}`,
-    });
-  });
+  app.post('/api/auth/register', (_req: Request, res: Response) => res.status(503).json({ success: false, error: 'Registration is unavailable until server-side account storage is configured.' }));
 
   // ── Vite Integration ──────────────────────────────────
   if (process.env.NODE_ENV === 'production') {
